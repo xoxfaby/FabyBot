@@ -5,18 +5,21 @@ import asyncio
 import aioDarkSkyAPI
 import io
 import os
+import functools
 from pytz import timezone
 from itertools import chain
 from timeit import timeit
 from random import randint
 from random import choice
 from datetime import datetime
+from datetime import timedelta
 from threading import Thread
 from queue import Queue, Empty
 from time import monotonic
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
 import numpy as np
 
 from config import token
@@ -213,73 +216,193 @@ forecastable = {
     'daily':'daily',
 }
 
+expected_weather = {
+    'Temperature':[
+        ['Temperature','temperature','{:.2f}°C'],
+        ['Feels like','apparentTemperature','{:.2f}°C'],
+        ['Dew Point','dewPoint','{:.2f}°C']
+    ],
+    'Wind':[
+        ['Bearing','windBearing','{}'],
+        ['Speed','windSpeed','{:.2f}km/h',3.6],
+        ['Gust','windGust','{:.2f}km/h',3.6]
+        ],
+    'Other':[
+        ['UV Index','uvIndex','{}'],
+        ['Humidity','humidity','{}%',100],
+        ['Cloud Cover','cloudCover','{}%',100],
+        ['Visibility','visibility','{:.2f}km'],
+        ['Pressure','pressure','{}hPa'],
+        ['Ozone','ozone','{:.2f} DU']
+    ]
+}
+expected_weather_extras = {
+    'Precipitation':[
+        ['Chance', 'precipProbability', '{}%', 100],
+        ['Type', 'precipType', '{}'],
+        ['Intensity', 'precipIntensity', '{:.4f}mm/h']
+    ],
+    'Nearest Storm':[
+        ['Distance', 'nearestStormBearing', '{}'],
+        ['Bearing', 'nearestStormDistance', '{:.0f}km']
+    ]
+}
+
+async def cForecast(client,message,params={}):
+    blocks = ['currently', 'minutely', 'hourly', 'daily', 'alerts', 'flags']
+
+    forecast = 'hourly' or forecastable.get(params.get('forecast'))
+    if not forecast:
+        forecast = 'daily'
+        await message.channel.send(f'`{params["forecast"]}` is not a valid forecast, defaulting to `daily`')
+    blocks.remove(forecast)
+    try:
+        resp = await WeatherClient.gforecast(params['ctext'],exclude=blocks,extend=True)
+    except LookupError:
+        await message.channel.send(f'Could not locate `{params["ctext"].replace("`","")}`')
+        return
+    try:
+        weather = resp[forecast]['data']
+    except KeyError:
+        await message.channel.send(f'`{forecast}` forecast not available for `{params["ctext"].replace("`","")}`')
+        return
+    try:
+        weather_summary = resp[forecast]['summary']
+    except KeyError:
+        try:
+            weather_summary = resp[forecast][0]['summary']
+        except KeyError:
+            weather_summary = "No Summary Available"
+    localtz = timezone(resp["timezone"])
+
+    plott = [mdates.date2num(datetime.fromtimestamp(datapoint['time']).astimezone(localtz)) for datapoint in weather]
+
+    fig = plt.figure(figsize=(8,6))
+    ax, ax2 = fig.subplots(2,1,True,False,subplot_kw={'facecolor':'#36393e'}, gridspec_kw = {'height_ratios':[1, 10],'wspace':0,'hspace':0})
+
+    ax.tick_params(axis='both', which='both', left=False, color="#FFFFFF")
+    ax2.tick_params(axis='both', which='both',  color="#FFFFFF")
+
+    ax.margins(0,0)
+    ax2.margins(0,0)
+    plt.setp(ax.get_yticklabels(), visible=False)
+    plt.setp(ax2.get_xticklabels(), color='#FFFFFF' )
+    plt.setp(ax2.get_yticklabels(), color='#FFFFFF' )
+    #%Y-%m-%d %H:%M"
+
+    if forecast == 'minutely':
+        ax2.xaxis.set_major_locator(mdates.MinuteLocator(interval=15,tz=localtz))
+        ax2.xaxis.set_minor_locator(mdates.MinuteLocator(interval=5,tz=localtz))
+        ax2.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S',tz=localtz))
+    elif forecast == 'hourly':
+        if True:
+            ax2.xaxis.set_major_formatter(mdates.DayLocator(tz=localtz))
+            ax2.xaxis.set_major_formatter(mdates.DateFormatter('%a %Y-%m-%d',tz=localtz))
+            ax2.xaxis.set_minor_locator(mdates.HourLocator(interval=6,tz=localtz))
+            datemin = mdates.date2num(datetime.fromtimestamp(weather[0]['time']).replace(hour=0, minute=0, second=0, microsecond=0))
+            datemax = mdates.date2num(datetime.fromtimestamp(weather[-1]['time']).replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1))
+            ax2.set_xlim(datemin, datemax)
+        else:
+            ax2.xaxis.set_major_locator(mdates.HourLocator(interval=4,tz=localtz))
+            ax2.xaxis.set_minor_locator(mdates.HourLocator(tz=localtz))
+            ax2.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M',tz=localtz))
+    else:
+        ax2.xaxis.set_major_formatter(mdates.DayLocator(tz=localtz))
+        ax2.xaxis.set_major_formatter(mdates.DateFormatter('%a %Y-%m-%d',tz=localtz))
+
+    try:
+        cloud_data = ([datapoint['cloudCover'] for datapoint in weather],
+                      [0 - datapoint['cloudCover'] for datapoint in weather])
+    except KeyError:
+        cloud_data = False
+
+    if cloud_data:
+        ax.fill_between(plott, cloud_data[0],cloud_data[1], label="Cloud Cover",color = '#99AAB5')
+    if forecast == 'daily':
+        ax2.fill_between(plott,
+                        [datapoint['temperatureLow'] for datapoint in weather],
+                        [datapoint['temperatureHigh'] for datapoint in weather],
+                        label = "Temperature")
+        ax2.plot(plott,
+                [(datapoint['temperatureLow'] + datapoint['temperatureHigh'] )/2 for datapoint in weather],
+                'r--', label = "Temperature Avg")
+    else:
+        ax2.plot(plott, [datapoint['temperature'] for datapoint in weather],linestyle='--',color='#ffFF00', label="Temperature")
+        ax2.plot(plott, [datapoint['apparentTemperature'] for datapoint in weather], linestyle='--',color='#ffa500', label="Feels Like")
+
+    lines = ax2.get_lines()
+    plt.setp(lines, linewidth=1)
+
+    axtitle = ax.set_title(f"{forecast.capitalize()} forecast for {resp['g']['formatted_address']}\n{weather_summary}")
+    axtitle.set_color('#FFFFFF')
+    fleg = fig.legend(loc=4,frameon=False)
+    plt.setp(fleg.get_texts(), color='#FFFFFF' )
+    fig.autofmt_xdate()
+    with io.BytesIO() as bPic:
+        fig.savefig(bPic, format='png', bbox_inches='tight',pad_inches=0,facecolor="#36393e",edgecolor="#FFFFFF")
+        bPic.seek(0)
+        await message.channel.send(file=discord.File(bPic, filename='plot.png'))
+        plt.close(fig)
+
 async def cWeather(client,message,params={}):
     '''Returns weather information
 forecast=minutely/hourly/daily'''
     blocks = ['currently', 'minutely', 'hourly', 'daily', 'alerts', 'flags']
-    if params.get('forecast'):
-        forecast = forecastable.get(params.get('forecast')) or 'daily'
-        blocks.remove(forecast)
+
+    blocks.remove('currently')
+    blocks.remove('alerts')
+    try:
         resp = await WeatherClient.gforecast(params['ctext'],exclude=blocks)
-        weather = resp[forecast]['data']
-        weather_summary = 'summary will go here w/e'# resp[forecast][0]['summary']
+    except LookupError:
+        await message.channel.send(f'Could not locate `{params["ctext"].replace("`","")}`')
+        return
+    localtz = timezone(resp["timezone"])
+    weather = resp['currently']
+    embed=discord.Embed(title=f"Weather for {resp['g']['formatted_address']}", description=f"**{weather['summary']}**  Requested by {message.author.mention}", color=discord.Color.green())
 
-        if forecast == 'minutely':
-            plott = [datetime.fromtimestamp(datapoint['time']).strftime('%H:%M') for datapoint in weather]
-        elif forecast == 'hourly':
-            plott = [datetime.fromtimestamp(datapoint['time']).strftime('%H:%M') for datapoint in weather]
-        else:
-            plott = [datetime.fromtimestamp(datapoint['time']).strftime('%Y-%m-%d') for datapoint in weather]
+    try:
+        print(weather['precipProbability'])
+        if weather['precipProbability'] > 0:
+            expected_weather['Precipitation'] = expected_weather_extras['Precipitation']
+    except KeyError:
+        pass
 
-        fig = plt.figure()
-        ax, ax2 = fig.subplots(2,1,True,False,subplot_kw={'facecolor':'#36393e'}, gridspec_kw = {'height_ratios':[1, 10],'wspace':0,'hspace':0})
+    if weather.get('nearestStormDistance') is not None:
+        expected_weather['Nearest Storm'] = expected_weather_extras['Nearest Storm']
 
-        ax.tick_params(axis='both', which='both', left=False, color="#FFFFFF")
-        ax2.tick_params(axis='both', which='both',  color="#FFFFFF")
+    for title,column in expected_weather.items():
+        columntext = ""
+        rows = 0
+        for row in column:
+            try:
+                if len(row) < 4:
+                    columntext = f'{columntext}**{row[0]}**: {row[2].format(weather[row[1]])}\n'
+                else:
+                    columntext = f'{columntext}**{row[0]}**: {row[2].format(weather[row[1]]*row[3])}\n'
+                rows += 1
+            except KeyError:
+                pass
+            if rows > 2:
+                rows = 0
+                embed.add_field(name=title,value=columntext,inline=True)
+                columntext = ""
+        if len(columntext) > 0:
+            embed.add_field(name=title,value=columntext,inline=True)
 
-        ax.margins(0,0)
-        ax2.margins(0,0)
-        plt.setp(ax2.get_xticklabels()[0], visible=False)
+    for alert in weather.get('alerts') or []:
+        columntext = f'**Title**: {alert["title"]}\n' \
+                     f'**Description**: {alert["description"]}\n' \
+                     f'**Isssued**: {datetime.fromtimestamp(alert["time"]).astimezone(timezone(resp["timezone"])).strftime("%Y-%m-%d %H:%M")}\n' \
+                     f'**Expires**: {datetime.fromtimestamp(alert["expires"]).astimezone(timezone(resp["timezone"])).strftime("%Y-%m-%d %H:%M")}\n' \
+                     f'**Regions**: {alert["regions"]}\n' \
+                     f'**Severity**: {alert["severity"]}\n' \
+                     f'**More Info**: [Click]{alert["uri"]}\n'
 
-        ax.fill_between(plott,
-                        [datapoint['cloudCover'] for datapoint in weather],
-                        [0 - datapoint['cloudCover'] for datapoint in weather],
-                        label="Cloud Cover",color = '#99AAB5')
-        if forecast == 'daily':
-            ax2.fill_between(plott,
-                            [datapoint['temperatureLow'] for datapoint in weather],
-                            [datapoint['temperatureHigh'] for datapoint in weather],
-                            label = "Apparent Temperature")
-            ax2.plot(plott,
-                    [(datapoint['temperatureLow'] + datapoint['temperatureHigh'] )/2 for datapoint in weather],
-                    'r--', label = "Temperature Low")
-        else:
-            ax2.plot(plott, [datapoint['temperature'] for datapoint in weather],linestyle='--',color='#ffFF00', label="Temperature")
-            ax2.plot(plott, [datapoint['apparentTemperature'] for datapoint in weather], linestyle='--',color='#ffa500', label="Feels Like")
-        ax.set_title(f"{forecast.capitalize()} forecast for {resp['g']['formatted_address']}\n{weather_summary}")
-        fig.legend(loc=4,frameon=False)
-        fig.autofmt_xdate()
-        with io.BytesIO() as bPic:
-            fig.savefig(bPic, format='png', bbox_inches='tight',pad_inches=0,facecolor="#36393e",edgecolor="#FFFFFF")
-            bPic.seek(0)
-            await message.channel.send(file=discord.File(bPic, filename='plot.png'))
-            plt.close(fig)
+        embed.add_field(name="ALERT",value=columntext,inline=True)
 
-    else:
-        blocks.remove('currently')
-        try:
-            resp = await WeatherClient.gforecast(params['ctext'],exclude=blocks)
-        except LookupError:
-            await message.channel.send(f'Could not locate `{params["ctext"]}`')
-            return
-        weather = resp['currently']
-        embed=discord.Embed(title=f"Weather for {resp['g']['formatted_address']}", description=f"**{weather['summary']}**  Requested by {message.author.mention}", color=discord.Color.green())
-        embed.add_field(name='Temperature', value=f'**Apparent**: {(weather["apparentTemperature"]):.2f}°C\n**Actual**: {(weather["temperature"]):.2f}°C\n**Dew Point**: {(weather["dewPoint"]):.2f}°C\n', inline=True)
-        embed.add_field(name='Wind', value=f"**Bearing**: {weather['windBearing']}\n**Speed**: {(weather['windSpeed']*3.6):.2f}km/h\n**Gust**: {(weather['windGust']*3.6):.2f}km/h", inline=True)
-        embed.add_field(name='Other', value=f"**UV Index**: {weather['uvIndex']}\n**Visibility**: {weather['visibility']}km\n**Humidity**: {(weather['humidity']*100):.2f}%", inline=True)
-        embed.set_footer(text=f'{datetime.fromtimestamp(weather["time"]).astimezone(timezone(resp["timezone"])).strftime("%Y-%m-%d %H:%M")} Local Time')
+    embed.set_footer(text=f'{datetime.fromtimestamp(weather["time"]).astimezone(localtz).strftime("%Y-%m-%d %H:%M")} Local Time')
 
-        await message.channel.send( embed=embed)
+    await message.channel.send( embed=embed)
 
 def all_files(path):
     scandir = os.scandir
@@ -293,40 +416,31 @@ def all_files(path):
             append(item)
     return file_list
 
-
-
-
-
-
-
-
-
 async def cPic(client,message,params={}):
+    """Gets you a pic
+Parameters: random"""
     if params.get("random"):
         pics = all_files(client.dirs['pics'])
         await message.channel.send(file=discord.File(choice(list(pics)).path))
 
 async def cTimeit(client,message,params={}):
+    """Debug command"""
     global pics
     global home
     pics = client.dirs['pics']
     home = client.dirs['logs']
-    msg = '```'
-    msg = f'''{msg}{timeit("print('asd')", number=100)}\n'''
-    msg = f'''{msg}{timeit("print('asd')", setup="from __main__ import all_files,pics", number=100)}\n'''
-    msg = f'''{msg}{timeit("all_files(home)", setup="from __main__ import all_files,home", number=10)}\n'''
-    msg = f'{msg}{timeit("all_files(pics)", setup="from __main__ import all_files,pics", number=10)}\n'
-    msg = f'{msg}{timeit("all_files(pics)", setup="from __main__ import all_files,pics", number=10)}\n'
-    msg = f'{msg}{timeit("list(all_files(pics))", setup="from __main__ import all_files,pics", number=10)}\n'
-    msg = f'{msg}{timeit("list(all_files(pics))", setup="from __main__ import all_files,pics", number=10)}\n'
-    msg = f'{msg}{timeit("list(all_files(pics))", setup="from __main__ import all_files,pics", number=10)}\n'
+    msg = '```py\n'
 
-    msg = f'{msg}{timeit("all_files(pics)", setup="from __main__ import all_files,pics", number=100)}\n'
-    msg = f'{msg}{timeit("list(all_files(pics))", setup="from __main__ import all_files,pics", number=100)}\n'
+    timeits = []
 
-    msg = f'{msg}{len(all_files(pics))}\n'
-    msg = f'{msg}{len(list(all_files(pics)))}\n'
-    msg = f'{msg}```'
+    for timeitfunc in timeits:
+        timeitafunc = functools.partial(timeit, timeitfunc, number=100)
+        timetaken = await client.loop.run_in_executor(None, timeitafunc)
+        msg = f'''{msg}[{timeitfunc.__name__}] {timetaken}\n'''
+        await asyncio.sleep(0)
+
+
+    msg = f'''{msg}```'''
 
     await message.channel.send(msg)
 
