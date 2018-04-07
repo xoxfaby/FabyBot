@@ -6,6 +6,9 @@ import aioDarkSkyAPI
 import io
 import os
 import functools
+import string
+from discordfaby import commands as dcommands
+from discordfaby.emoji import emoji
 from pytz import timezone
 from itertools import chain
 from timeit import timeit
@@ -249,13 +252,9 @@ expected_weather_extras = {
 }
 
 async def cForecast(client,message,params={}):
-    blocks = ['currently', 'minutely', 'hourly', 'daily', 'alerts', 'flags']
+    blocks = ['currently', 'minutely', 'daily', 'alerts', 'flags']
 
-    forecast = 'hourly' or forecastable.get(params.get('forecast'))
-    if not forecast:
-        forecast = 'daily'
-        await message.channel.send(f'`{params["forecast"]}` is not a valid forecast, defaulting to `daily`')
-    blocks.remove(forecast)
+    forecast = 'hourly'
     try:
         resp = await WeatherClient.gforecast(params['ctext'],exclude=blocks,extend=True)
     except LookupError:
@@ -276,61 +275,68 @@ async def cForecast(client,message,params={}):
     localtz = timezone(resp["timezone"])
 
     plott = [mdates.date2num(datetime.fromtimestamp(datapoint['time']).astimezone(localtz)) for datapoint in weather]
+    plotzero = [0 for _ in weather]
 
     fig = plt.figure(figsize=(8,6))
-    ax, ax2 = fig.subplots(2,1,True,False,subplot_kw={'facecolor':'#36393e'}, gridspec_kw = {'height_ratios':[1, 10],'wspace':0,'hspace':0})
+    ax, ax2, ax4, ax3 = fig.subplots(4,1,True,False,subplot_kw={'facecolor':'#36393e'}, gridspec_kw = {'height_ratios':[1, 1, 0.5, 10],'wspace':0,'hspace':0})
 
     ax.tick_params(axis='both', which='both', left=False, color="#FFFFFF")
-    ax2.tick_params(axis='both', which='both',  color="#FFFFFF")
+    ax2.tick_params(axis='both', which='both', left=False, color="#FFFFFF")
+    ax3.tick_params(axis='both', which='both',  color="#FFFFFF")
 
     ax.margins(0,0)
     ax2.margins(0,0)
+    ax3.margins(0,0)
+    ax4.margins(0,0)
     plt.setp(ax.get_yticklabels(), visible=False)
-    plt.setp(ax2.get_xticklabels(), color='#FFFFFF' )
-    plt.setp(ax2.get_yticklabels(), color='#FFFFFF' )
-    #%Y-%m-%d %H:%M"
+    plt.setp(ax2.get_yticklabels(), visible=False)
+    plt.setp(ax4.get_yticklabels(), visible=False)
+    plt.setp(ax3.get_xticklabels(), color='#FFFFFF' )
+    plt.setp(ax3.get_yticklabels(), color='#FFFFFF' )
 
-    if forecast == 'minutely':
-        ax2.xaxis.set_major_locator(mdates.MinuteLocator(interval=15,tz=localtz))
-        ax2.xaxis.set_minor_locator(mdates.MinuteLocator(interval=5,tz=localtz))
-        ax2.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S',tz=localtz))
-    elif forecast == 'hourly':
-        if True:
-            ax2.xaxis.set_major_formatter(mdates.DayLocator(tz=localtz))
-            ax2.xaxis.set_major_formatter(mdates.DateFormatter('%a %Y-%m-%d',tz=localtz))
-            ax2.xaxis.set_minor_locator(mdates.HourLocator(interval=6,tz=localtz))
-            datemin = mdates.date2num(datetime.fromtimestamp(weather[0]['time']).replace(hour=0, minute=0, second=0, microsecond=0))
-            datemax = mdates.date2num(datetime.fromtimestamp(weather[-1]['time']).replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1))
-            ax2.set_xlim(datemin, datemax)
-        else:
-            ax2.xaxis.set_major_locator(mdates.HourLocator(interval=4,tz=localtz))
-            ax2.xaxis.set_minor_locator(mdates.HourLocator(tz=localtz))
-            ax2.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M',tz=localtz))
+    if forecast == 'hourly':
+        ax3.xaxis.set_major_locator(mdates.DayLocator(tz=localtz))
+        ax3.xaxis.set_major_formatter(mdates.DateFormatter('%a %Y-%m-%d',tz=localtz))
+        ax3.xaxis.set_minor_locator(mdates.HourLocator(interval=6,tz=localtz))
+        #ax3.xaxis.set_minor_formatter(mdates.DateFormatter('%M:%S',tz=localtz))
+        datemin = mdates.date2num(datetime.fromtimestamp(weather[0]['time']).astimezone(localtz).replace(hour=0, minute=0, second=0, microsecond=0))
+        datemax = mdates.date2num(datetime.fromtimestamp(weather[-1]['time']).astimezone(localtz).replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1))
+        ax3.set_xlim(datemin, datemax)
     else:
-        ax2.xaxis.set_major_formatter(mdates.DayLocator(tz=localtz))
-        ax2.xaxis.set_major_formatter(mdates.DateFormatter('%a %Y-%m-%d',tz=localtz))
+        ax3.xaxis.set_major_formatter(mdates.DayLocator(tz=localtz))
+        ax3.xaxis.set_major_formatter(mdates.DateFormatter('%a %Y-%m-%d',tz=localtz))
 
-    try:
-        cloud_data = ([datapoint['cloudCover'] for datapoint in weather],
-                      [0 - datapoint['cloudCover'] for datapoint in weather])
-    except KeyError:
-        cloud_data = False
 
-    if cloud_data:
-        ax.fill_between(plott, cloud_data[0],cloud_data[1], label="Cloud Cover",color = '#99AAB5')
-    if forecast == 'daily':
-        ax2.fill_between(plott,
-                        [datapoint['temperatureLow'] for datapoint in weather],
-                        [datapoint['temperatureHigh'] for datapoint in weather],
-                        label = "Temperature")
-        ax2.plot(plott,
-                [(datapoint['temperatureLow'] + datapoint['temperatureHigh'] )/2 for datapoint in weather],
-                'r--', label = "Temperature Avg")
-    else:
-        ax2.plot(plott, [datapoint['temperature'] for datapoint in weather],linestyle='--',color='#ffFF00', label="Temperature")
-        ax2.plot(plott, [datapoint['apparentTemperature'] for datapoint in weather], linestyle='--',color='#ffa500', label="Feels Like")
+    cloud_data = ([datapoint.get('cloudCover') or 0 for datapoint in weather],
+                 [0 - (datapoint.get('cloudCover') or 0) for datapoint in weather],
+                 [False if datapoint['cloudCover'] == 0 else True for datapoint in weather])
+    sun_data = ([datapoint.get('uvIndex') or 0 for datapoint in weather],
+                 [0 - (datapoint.get('uvIndex') or 0) for datapoint in weather],
+                 [False if datapoint['uvIndex'] == 0 else True for datapoint in weather])
 
-    lines = ax2.get_lines()
+    precip_data = ([0 - (datapoint.get('precipIntensity') or 0) for datapoint in weather],
+                  [True if datapoint.get('precipIntensity') else False for datapoint in weather])
+
+
+    ax.fill_between(plott, sun_data[0],sun_data[1],sun_data[2], label="UV Index",color = '#FFFF00')
+    ax2.fill_between(plott, cloud_data[0],cloud_data[1],cloud_data[2], label="Cloud Cover",color = '#99AAB5')
+    ax4.fill_between(plott, plotzero, precip_data[0],precip_data[1], label="Precipitation",color = '#5555FF', hatch='///', edgecolor = '#36393e')
+
+    temp_data = [datapoint['temperature'] for datapoint in weather]
+    atemp_data = [datapoint['apparentTemperature'] for datapoint in weather]
+    precipmax = min(min(precip_data[0]),-0.5)
+    tempmin = min(min(temp_data),min(atemp_data),1)
+    tempmax = max(max(temp_data),max(atemp_data),-1)
+    ax3.set_ylim(tempmin-1, tempmax+1)
+    ax4.set_ylim(-0.5, 0)
+
+    ax3.plot(plott, plotzero,color='#FFFFFF')
+    ax3.plot(plott, temp_data,color='#ffFF00', label="Temperature")
+    ax3.plot(plott, atemp_data, linestyle='--',color='#ffa500', label="Feels Like")
+
+
+
+    lines = ax3.get_lines()
     plt.setp(lines, linewidth=1)
 
     axtitle = ax.set_title(f"{forecast.capitalize()} forecast for {resp['g']['formatted_address']}\n{weather_summary}")
@@ -345,64 +351,158 @@ async def cForecast(client,message,params={}):
         plt.close(fig)
 
 async def cWeather(client,message,params={}):
-    '''Returns weather information
-forecast=minutely/hourly/daily'''
+    '''Returns current weather information for a location'''
     blocks = ['currently', 'minutely', 'hourly', 'daily', 'alerts', 'flags']
-
-    blocks.remove('currently')
-    blocks.remove('alerts')
-    try:
-        resp = await WeatherClient.gforecast(params['ctext'],exclude=blocks)
-    except LookupError:
-        await message.channel.send(f'Could not locate `{params["ctext"].replace("`","")}`')
-        return
-    localtz = timezone(resp["timezone"])
-    weather = resp['currently']
-    embed=discord.Embed(title=f"Weather for {resp['g']['formatted_address']}", description=f"**{weather['summary']}**  Requested by {message.author.mention}", color=discord.Color.green())
-
-    try:
-        print(weather['precipProbability'])
-        if weather['precipProbability'] > 0:
-            expected_weather['Precipitation'] = expected_weather_extras['Precipitation']
-    except KeyError:
-        pass
-
-    if weather.get('nearestStormDistance') is not None:
-        expected_weather['Nearest Storm'] = expected_weather_extras['Nearest Storm']
-
-    for title,column in expected_weather.items():
-        columntext = ""
-        rows = 0
-        for row in column:
+    if params.get('forecast'):
+        await message.channel.send('This functionality is deprecated, please use the forecast command.')
+        forecast = forecastable.get(params.get('forecast'))
+        if not forecast:
+            forecast = 'daily'
+            await message.channel.send(f'`{params["forecast"]}` is not a valid forecast, defaulting to `daily`')
+        blocks.remove(forecast)
+        try:
+            resp = await WeatherClient.gforecast(params['ctext'],exclude=blocks,extend=params.get('extend'))
+        except LookupError:
+            await message.channel.send(f'Could not locate `{params["ctext"].replace("`","")}`')
+            return
+        try:
+            weather = resp[forecast]['data']
+        except KeyError:
+            await message.channel.send(f'`{forecast}` forecast not available for `{params["ctext"].replace("`","")}`')
+            return
+        try:
+            weather_summary = resp[forecast]['summary']
+        except KeyError:
             try:
-                if len(row) < 4:
-                    columntext = f'{columntext}**{row[0]}**: {row[2].format(weather[row[1]])}\n'
-                else:
-                    columntext = f'{columntext}**{row[0]}**: {row[2].format(weather[row[1]]*row[3])}\n'
-                rows += 1
+                weather_summary = resp[forecast][0]['summary']
             except KeyError:
-                pass
-            if rows > 2:
-                rows = 0
+                weather_summary = "No Summary Available"
+        localtz = timezone(resp["timezone"])
+
+        plott = [mdates.date2num(datetime.fromtimestamp(datapoint['time']).astimezone(localtz)) for datapoint in weather]
+
+        fig = plt.figure(figsize=(8,6))
+        ax, ax2 = fig.subplots(2,1,True,False,subplot_kw={'facecolor':'#36393e'}, gridspec_kw = {'height_ratios':[1, 10],'wspace':0,'hspace':0})
+
+        ax.tick_params(axis='both', which='both', left=False, color="#FFFFFF")
+        ax2.tick_params(axis='both', which='both',  color="#FFFFFF")
+
+        ax.margins(0,0)
+        ax2.margins(0,0)
+        plt.setp(ax.get_yticklabels(), visible=False)
+        plt.setp(ax2.get_xticklabels(), color='#FFFFFF' )
+        plt.setp(ax2.get_yticklabels(), color='#FFFFFF' )
+        #%Y-%m-%d %H:%M"
+
+        if forecast == 'minutely':
+            ax2.xaxis.set_major_locator(mdates.MinuteLocator(interval=15,tz=localtz))
+            ax2.xaxis.set_minor_locator(mdates.MinuteLocator(interval=5,tz=localtz))
+            ax2.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S',tz=localtz))
+        elif forecast == 'hourly':
+            if params.get('extend'):
+                ax2.xaxis.set_major_formatter(mdates.DayLocator(tz=localtz))
+                ax2.xaxis.set_major_formatter(mdates.DateFormatter('%a %Y-%m-%d',tz=localtz))
+                ax2.xaxis.set_minor_locator(mdates.HourLocator(interval=6,tz=localtz))
+                datemin = mdates.date2num(datetime.fromtimestamp(weather[0]['time']).replace(hour=0, minute=0, second=0, microsecond=0))
+                datemax = mdates.date2num(datetime.fromtimestamp(weather[-1]['time']).replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1))
+                ax2.set_xlim(datemin, datemax)
+            else:
+                ax2.xaxis.set_major_locator(mdates.HourLocator(interval=4,tz=localtz))
+                ax2.xaxis.set_minor_locator(mdates.HourLocator(tz=localtz))
+                ax2.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M',tz=localtz))
+        else:
+            ax2.xaxis.set_major_formatter(mdates.DayLocator(tz=localtz))
+            ax2.xaxis.set_major_formatter(mdates.DateFormatter('%a %Y-%m-%d',tz=localtz))
+
+        try:
+            cloud_data = ([datapoint['cloudCover'] for datapoint in weather],
+                          [0 - datapoint['cloudCover'] for datapoint in weather])
+        except KeyError:
+            cloud_data = False
+
+        if cloud_data:
+            ax.fill_between(plott, cloud_data[0],cloud_data[1], label="Cloud Cover",color = '#99AAB5')
+        if forecast == 'daily':
+            ax2.fill_between(plott,
+                            [datapoint['temperatureLow'] for datapoint in weather],
+                            [datapoint['temperatureHigh'] for datapoint in weather],
+                            label = "Temperature")
+            ax2.plot(plott,
+                    [(datapoint['temperatureLow'] + datapoint['temperatureHigh'] )/2 for datapoint in weather],
+                    'r--', label = "Temperature Avg")
+        else:
+            ax2.plot(plott, [datapoint['temperature'] for datapoint in weather],linestyle='--',color='#ffFF00', label="Temperature")
+            ax2.plot(plott, [datapoint['apparentTemperature'] for datapoint in weather], linestyle='--',color='#ffa500', label="Feels Like")
+
+        lines = ax2.get_lines()
+        plt.setp(lines, linewidth=1)
+
+        axtitle = ax.set_title(f"{forecast.capitalize()} forecast for {resp['g']['formatted_address']}\n{weather_summary}")
+        axtitle.set_color('#FFFFFF')
+        fleg = fig.legend(loc=4,frameon=False)
+        plt.setp(fleg.get_texts(), color='#FFFFFF' )
+        fig.autofmt_xdate()
+        with io.BytesIO() as bPic:
+            fig.savefig(bPic, format='png', bbox_inches='tight',pad_inches=0,facecolor="#36393e",edgecolor="#FFFFFF")
+            bPic.seek(0)
+            await message.channel.send(file=discord.File(bPic, filename='plot.png'))
+            plt.close(fig)
+
+    else:
+        blocks.remove('currently')
+        blocks.remove('alerts')
+        try:
+            resp = await WeatherClient.gforecast(params['ctext'],exclude=blocks)
+        except LookupError:
+            await message.channel.send(f'Could not locate `{params["ctext"].replace("`","")}`')
+            return
+        localtz = timezone(resp["timezone"])
+        weather = resp['currently']
+        embed=discord.Embed(title=f"Weather for {resp['g']['formatted_address']}", description=f"**{weather['summary']}**  Requested by {message.author.mention}", color=discord.Color.green())
+
+        try:
+            print(weather['precipProbability'])
+            if weather['precipProbability'] > 0:
+                expected_weather['Precipitation'] = expected_weather_extras['Precipitation']
+        except KeyError:
+            pass
+
+        if weather.get('nearestStormDistance') is not None:
+            expected_weather['Nearest Storm'] = expected_weather_extras['Nearest Storm']
+
+        for title,column in expected_weather.items():
+            columntext = ""
+            rows = 0
+            for row in column:
+                try:
+                    if len(row) < 4:
+                        columntext = f'{columntext}**{row[0]}**: {row[2].format(weather[row[1]])}\n'
+                    else:
+                        columntext = f'{columntext}**{row[0]}**: {row[2].format(weather[row[1]]*row[3])}\n'
+                    rows += 1
+                except KeyError:
+                    pass
+                if rows > 2:
+                    rows = 0
+                    embed.add_field(name=title,value=columntext,inline=True)
+                    columntext = ""
+            if len(columntext) > 0:
                 embed.add_field(name=title,value=columntext,inline=True)
-                columntext = ""
-        if len(columntext) > 0:
-            embed.add_field(name=title,value=columntext,inline=True)
 
-    for alert in weather.get('alerts') or []:
-        columntext = f'**Title**: {alert["title"]}\n' \
-                     f'**Description**: {alert["description"]}\n' \
-                     f'**Isssued**: {datetime.fromtimestamp(alert["time"]).astimezone(timezone(resp["timezone"])).strftime("%Y-%m-%d %H:%M")}\n' \
-                     f'**Expires**: {datetime.fromtimestamp(alert["expires"]).astimezone(timezone(resp["timezone"])).strftime("%Y-%m-%d %H:%M")}\n' \
-                     f'**Regions**: {alert["regions"]}\n' \
-                     f'**Severity**: {alert["severity"]}\n' \
-                     f'**More Info**: [Click]{alert["uri"]}\n'
+        for alert in weather.get('alerts') or []:
+            columntext = f'**Title**: {alert["title"]}\n' \
+                         f'**Description**: {alert["description"]}\n' \
+                         f'**Isssued**: {datetime.fromtimestamp(alert["time"]).astimezone(timezone(resp["timezone"])).strftime("%Y-%m-%d %H:%M")}\n' \
+                         f'**Expires**: {datetime.fromtimestamp(alert["expires"]).astimezone(timezone(resp["timezone"])).strftime("%Y-%m-%d %H:%M")}\n' \
+                         f'**Regions**: {alert["regions"]}\n' \
+                         f'**Severity**: {alert["severity"]}\n' \
+                         f'**More Info**: [Click]{alert["uri"]}\n'
 
-        embed.add_field(name="ALERT",value=columntext,inline=True)
+            embed.add_field(name="ALERT",value=columntext,inline=True)
 
-    embed.set_footer(text=f'{datetime.fromtimestamp(weather["time"]).astimezone(localtz).strftime("%Y-%m-%d %H:%M")} Local Time')
+        embed.set_footer(text=f'{datetime.fromtimestamp(weather["time"]).astimezone(localtz).strftime("%Y-%m-%d %H:%M")} Local Time')
 
-    await message.channel.send( embed=embed)
+        await message.channel.send( embed=embed)
 
 def all_files(path):
     scandir = os.scandir
@@ -432,25 +532,163 @@ async def cTimeit(client,message,params={}):
     msg = '```py\n'
 
     timeits = []
+    timeits2 = []
 
+    for x in range(100000):
+        timeits.append(lambda :dcommands.unique_num(x))
+    for x in range(100000):
+        timeits2.append(lambda: dcommands.unique_num_slow(x))
+
+    timetaken = []
+    timetaken2 = []
     for timeitfunc in timeits:
-        timeitafunc = functools.partial(timeit, timeitfunc, number=100)
-        timetaken = await client.loop.run_in_executor(None, timeitafunc)
-        msg = f'''{msg}[{timeitfunc.__name__}] {timetaken}\n'''
-        await asyncio.sleep(0)
+        timeitafunc = functools.partial(timeit, timeitfunc, number=1)
+        timetaken.append( await client.loop.run_in_executor(None, timeitafunc) )
+    for timeitfunc in timeits2:
+        timeitafunc = functools.partial(timeit, timeitfunc, number=1)
+        timetaken2.append(await client.loop.run_in_executor(None, timeitafunc))
+        #msg = f'''{msg}[{timeitfunc.__name__}] {timetaken}\n'''
 
 
+    fig = plt.figure(figsize=(8,6))
+    ax = fig.subplots(1,1,True,False,subplot_kw={'facecolor':'#36393e'})
+
+    ax.tick_params(axis='both', which='both', color="#FFFFFF")
+
+
+    ax.margins(0,0)
+    plt.setp(ax.get_yticklabels(), color='#FFFFFF' )
+    plt.setp(ax.get_xticklabels(), color='#FFFFFF' )
+
+    ax2 = ax.twinx()
+    ax.plot(timetaken,color='#00FFFF')
+    ax2.plot(timetaken2,color='#FFFF00')
+
+
+    lines = ax.get_lines()
+    plt.setp(lines, linewidth=1)
+    lines2 = ax2.get_lines()
+    plt.setp(lines2, linewidth=1)
+
+    fig.autofmt_xdate()
+    with io.BytesIO() as bPic:
+        fig.savefig(bPic, format='png', bbox_inches='tight',pad_inches=0,facecolor="#36393e",edgecolor="#FFFFFF")
+        bPic.seek(0)
+        await message.channel.send(file=discord.File(bPic, filename='plot.png'))
+        plt.close(fig)
+
+
+    msg = f'''{msg}Loop finished with {i} errors.'''
     msg = f'''{msg}```'''
 
-    await message.channel.send(msg)
+    #await message.channel.send(msg)
+
+async def cReact(client,message,params={}):
+    """React with emoji or letters, parses mentions and ID's messages to respond to, users to respond to their last message and channels find messages/users in
+Parameters: search=text_to_search_for"""
+
+    reactmessage = message
+    trychannel = message.channel
+    for word in params['ctext'].lower().split():
+        try:
+            wint = int(word)
+            if client.get_channel(wint):
+                trychannel = client.get_channel(wint)
+                break
+        except (ValueError,TypeError):
+             pass
+    for word in params['ctext'].lower().split():
+        if any(channel.mention for channel in message.channel_mentions if channel.mention in word):
+            trychannel = next(channel.mention for channel in message.channel_mention if channel.mention in word)
+            break
+        try:
+            wint = int(word)
+            if client.get_channel(wint):
+                trychannel = client.get_channel(wint)
+                break
+        except (ValueError,TypeError):
+             pass
+    for word in params['ctext'].lower().split():
+        try:
+            wint = int(word)
+            try:
+                reactmessage = await trychannel.get_message(wint)
+                break
+            except:
+                pass
+        except (ValueError,TypeError):
+             pass
+    for word in params['ctext'].lower().split():
+        try:
+            wint = int(word)
+            try:
+                user = client.get_user(wint)
+                if user:
+                    reactmessage = await trychannel.history().get(author=user) or reactmessage
+                    break
+            except:
+                pass
+        except (ValueError,TypeError):
+             pass
+    for mention in message.mentions:
+        if mention != client.user:
+            new_reactmessage = await trychannel.history().get(author=mention)
+            if new_reactmessage:
+                reactmessage = new_reactmessage
+                break
+    if params.get('search'):
+        search = ' '.join(params['search'].split('_'))
+        reactmessage = await trychannel.history().find(lambda x: search in x.content) or reactmessage
+    try:
+        for word in params['ctext'].lower().split():
+            if any(member.mention in word for member in message.mentions):
+                continue
+            try:
+                wint = int(word)
+            except (ValueError,TypeError):
+                wint = False
+            if wint:
+                if client.get_channel(wint):
+                    trychannel = client.get_channel(wint)
+                    continue
+                else:
+                    try:
+                        reactmessage = await trychannel.get_message(wint)
+                        continue
+                    except:
+                        pass
+                    user = client.get_user(wint)
+                    if user:
+                        reactmessage = await trychannel.history().get(author=user) or reactmessage
+                        continue
+            if not word.startswith('\\') and emoji.get(word):
+                await reactmessage.add_reaction(emoji[word])
+            elif not word.startswith('\\') and word in emoji.values():
+                await reactmessage.add_reaction(word)
+            else:
+                for char in word:
+                    if char in string.ascii_lowercase:
+                        await reactmessage.add_reaction(emoji[f'regional_indicator_{char}'])
+                    elif char in string.digits or emoji.get(char):
+                        await reactmessage.add_reaction(emoji[char])
+    except discord.errors.Forbidden:
+        await asyncio.sleep(5)
+
+async def cNumReact(client,message,params={}):
+    await dcommands.num_react(client,message,params.get('ctext') or params.get('n'))
+
 
 commands = {
     'roll':[['dice','die'],cRoll,True,False],
     'token':[[],cToken,False,True],
-    'weather':[['forecast'],cWeather,False,False],
+    'weather':[[],cWeather,False,False],
+    'forecast':[[],cForecast,False,False],
     'echo':[['say'],cEcho,False,True],
     'pic':[['pics'],cPic,False,False],
-    'timeit':[[],cTimeit,False,True]
+    'react':[['reaction'],cReact,True,False],
+    'numreact':dcommands.Command(coroutine=cNumReact, cooldown=True),
+    'timeit':[[],cTimeit,False,True],
+
 }
 
 dirs = {
