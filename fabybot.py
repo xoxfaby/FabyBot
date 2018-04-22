@@ -522,6 +522,18 @@ Parameters: random"""
     if params.get("random"):
         pics = all_files(client.dirs['pics'])
         await message.channel.send(file=discord.File(choice(list(pics)).path))
+        if params.get('c') and message.author.id in client.admins:
+            try:
+                count = int(params['c'])
+                try:
+                    interval = int(params['i']) or 5
+                    for _ in range(1,count):
+                        await asyncio.sleep(interval * 60)
+                        await message.channel.send(file=discord.File(choice(list(pics)).path))
+                except (ValueError,TypeError):
+                    pass
+            except (ValueError,TypeError):
+                pass
 
 async def cTimeit(client,message,params={}):
     """Debug command"""
@@ -535,9 +547,9 @@ async def cTimeit(client,message,params={}):
     timeits2 = []
 
     for x in range(100000):
-        timeits.append(lambda :dcommands.unique_num(x))
-    for x in range(100000):
-        timeits2.append(lambda: dcommands.unique_num_slow(x))
+        timeits.append(lambda :(x in range(1000,100000)))
+        timeits.append(lambda :any(y for y in range(1000,100000) if x == y))
+
 
     timetaken = []
     timetaken2 = []
@@ -675,7 +687,7 @@ Parameters: search=text_to_search_for"""
         await asyncio.sleep(5)
 
 async def cNumReact(client,message,params={}):
-    await dcommands.num_react(client,message,params.get('ctext') or params.get('n'))
+    await dcommands.num_react(client, params.get('n') or message,params.get('ctext'))
 
 
 commands = {
